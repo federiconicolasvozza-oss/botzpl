@@ -1,6 +1,4 @@
-// index.js – Bot Zupply (Q&A con roles Transportista/Cliente)
-// Mantiene tu base: Express + webhook + sesiones + botones/listas
-
+// index.js – Zupply Bot (Flujo de ventas: calificación por volumen de envíos)
 import express from "express";
 import dotenv from "dotenv";
 import fs from "fs";
@@ -18,35 +16,35 @@ const WHATSAPP_TOKEN = (process.env.WHATSAPP_TOKEN || "").trim();
 const PHONE_NUMBER_ID = (process.env.PHONE_NUMBER_ID || "").trim();
 const API_VERSION = (process.env.API_VERSION || "v23.0").trim();
 
-// Google Sheets opcional (para registrar leads)
+// Google Sheets opcional
 const GOOGLE_SHEETS_ID = (process.env.GOOGLE_SHEETS_ID || "").trim();
 const TAB_LEADS = (process.env.TAB_LEADS || "Leads").trim();
 
-/* ========= Rutas de credenciales opcionales ========= */
+/* ========= Credenciales Google opcionales ========= */
 function chooseCredPath(filename) {
-  const fromSecrets = path.join("/etc/secrets", filename); // Render Secret Files
-  const fromRepo = path.join(process.cwd(), "credentials", filename); // Repo
+  const fromSecrets = path.join("/etc/secrets", filename);
+  const fromRepo = path.join(process.cwd(), "credentials", filename);
   try { fs.accessSync(fromSecrets); return fromSecrets; } catch {}
   return fromRepo;
 }
 const CLIENT_PATH = chooseCredPath("oauth_client.json");
 const TOKEN_PATH  = chooseCredPath("oauth_token.json");
 
-/* ============ Estado en memoria por usuario ============ */
+/* ============ Sesiones por usuario ============ */
 /**
  * sessions[wa_id] = {
  *   step: null | "lead_empresa" | "lead_email",
- *   role: null | "transportista" | "cliente",
+ *   segment: null | "seg_0_100" | "seg_100_300" | "seg_300",
  *   data: { empresa?: string, email?: string }
  * }
  */
 const sessions = new Map();
 function getSession(wa_id) {
-  if (!sessions.has(wa_id)) sessions.set(wa_id, { step: null, role: null, data: {} });
+  if (!sessions.has(wa_id)) sessions.set(wa_id, { step: null, segment: null, data: {} });
   return sessions.get(wa_id);
 }
 
-/* ============ Helpers WhatsApp ============ */
+/* ============ WhatsApp helpers ============ */
 async function sendMessage(payload) {
   const url = `https://graph.facebook.com/${API_VERSION}/${PHONE_NUMBER_ID}/messages`;
   const res = await fetch(url, {
@@ -91,100 +89,72 @@ function sendButtons(to, text, buttons) {
   });
 }
 
-function sendList(to, { header = "Zupply", body, buttonText, sections }) {
-  return sendMessage({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "list",
-      header: { type: "text", text: header },
-      body: { text: body },
-      footer: { text: "zupply.tech" },
-      action: { button: buttonText, sections },
-    },
-  });
-}
-
-/* ====== Mensajes base (editables) ====== */
+/* ============ Copy editable ============ */
 const LINKS = {
   web: "https://zupply.tech/",
   mail: "hola@zupply.tech",
-  demo: "https://zupply.tech/", // actualizá si tenés URL de agenda
+  demo: "https://zupply.tech/", // poné aquí la URL de agenda si la tenés
 };
 
 const COPY = {
   bienvenida:
-    "👋 ¡Hola! Bienvenido/a a *Zupply*. Centralizamos tus envíos, " +
-    "automatizamos la ingesta y te damos visibilidad total. ¿Cómo te ayudamos hoy?",
-  pedirRol: "Elegí una opción para continuar:",
-  seguimientoNoDisponible:
-    "📦 *Seguimiento por WhatsApp*\nAún no está disponible esta opción. " +
-    "Muy pronto podrás consultar el estado de tus envíos por aquí. 🙌",
-  asesorCTA:
-    "¿Querés que te contacte un asesor? Decime *el nombre de tu empresa* y luego un *email*.",
-  emailInvalido: "⚠️ Ese email no parece válido. Probá de nuevo.",
-  graciasLead: "✅ ¡Gracias! Un asesor te escribirá a la brevedad.",
+    "👋 ¡Hola! Soy el asistente comercial de *Zupply*.\n" +
+    "Digitalizamos tu logística: ingesta automática, asignación inteligente y visibilidad total.\n\n" +
+    "Para orientarte mejor, decime:",
+  preguntaVolumen: "¿Cuántos envíos diarios manejás?",
+  ctasPostPitch:
+    "¿Cómo seguimos? Elegí una opción:",
+  pedirEmpresa:
+    "Genial. Para coordinar, decime el *nombre de tu empresa*.",
+  pedirEmail:
+    "📧 Perfecto. Ahora un *email* de contacto para enviarte la info y coordinar la demo.",
+  emailInvalido: "⚠️ Ese email no parece válido. Probá nuevamente.",
+  graciasLead:
+    "✅ ¡Gracias! Un asesor te contactará a la brevedad. Mientras tanto, podés visitar: " + LINKS.web,
   fallback:
-    "No tengo una respuesta exacta para eso 🤔. Te puedo derivar con un asesor o ver otras opciones del menú.",
+    "No tengo una respuesta exacta para eso 🤔. ¿Querés que te contacte un asesor?",
 };
 
-/* ====== Contenidos por rol ====== */
-// Transportista
-const TRANSP = {
-  intro:
-    "🚚 *Soy transportista*\n" +
-    "Podemos integrarnos a tu operación para automatizar la *ingesta de pedidos*, " +
-    "normalizar datos y asignar envíos con visibilidad en tiempo real.",
-  integraciones:
-    "🔌 *Integraciones*\n" +
-    "• Ingesta automática desde QR/CSV y marketplaces\n" +
-    "• API + Webhooks para sincronización bidireccional\n" +
-    "• Listas de precios por cliente y reglas por zona\n" +
-    "• Panel de asignación y mapa interactivo\n\n" +
-    "¿Querés que veamos tu caso? Podés hablar con un asesor.",
-  comoFunciona:
-    "⚙️ *¿Cómo funciona?*\n" +
-    "1) Ingesta de pedidos (evitás carga manual)\n" +
-    "2) Normalización y validaciones en tiempo real\n" +
-    "3) Asignación por reglas/zonas o mapa\n" +
-    "4) Reportes y trazabilidad punta a punta\n",
-  requisitos:
-    "🧩 *Requisitos técnicos*\n" +
-    "• Token/API o archivo estándar (CSV/QR)\n" +
-    "• Webhooks opcionales para eventos\n" +
-    "• Onboarding guiado: empezás en días, no meses",
-  beneficios:
-    "✅ *Beneficios*\n" +
-    "• Menos procesos manuales y errores\n" +
-    "• Visibilidad total en tiempo real\n" +
-    "• Escalabilidad sin sumar más planillas\n" +
-    "• Reportes operativos y métricas de calidad",
-};
+/* ============ Pitches por segmento ============ */
+function pitchBySegment(id) {
+  if (id === "seg_0_100") {
+    return {
+      title: "🎯 Segmento: 0–100 envíos/día",
+      text:
+        "Ideal para estandarizar rápido sin fricción.\n" +
+        "• Ingesta automática (CSV/QR/API)\n" +
+        "• Reglas simples de asignación\n" +
+        "• Tracking y panel unificado\n" +
+        "• Reportes básicos para decisiones\n",
+      plan: "Sugerencia: *Plan Emprendedor/Starter*",
+    };
+  }
+  if (id === "seg_100_300") {
+    return {
+      title: "🚀 Segmento: 100–300 envíos/día",
+      text:
+        "Escalá con control operativo real.\n" +
+        "• Reglas avanzadas por zona/SLAs\n" +
+        "• Integraciones bidireccionales (API/Webhooks)\n" +
+        "• KPIs operativos y calidad de servicio\n" +
+        "• Onboarding guiado en días\n",
+      plan: "Sugerencia: *Plan Profesional*",
+    };
+  }
+  // seg_300
+  return {
+    title: "🏢 Segmento: 300+ envíos/día",
+    text:
+      "Enterprise para alta escala y compliance.\n" +
+      "• Multi-depósito / multi-transportista\n" +
+      "• Reglas complejas, ruteo y SLAs\n" +
+      "• Integraciones a medida (ERP/BI)\n" +
+      "• Gobernanza, auditoría y soporte priorizado\n",
+    plan: "Sugerencia: *Plan Enterprise*",
+  };
+}
 
-// Cliente
-const CLIENTE = {
-  intro:
-    "🧑‍💼 *Soy cliente*\n" +
-    "Zupply te ayuda a ordenar logística y crecer: menos tareas manuales, más control y " +
-    "mejor experiencia para tus clientes.",
-  conocer:
-    "🧭 *¿Qué es Zupply?*\n" +
-    "Una plataforma para gestionar tus envíos en un solo lugar: carga automática, " +
-    "asignación, seguimiento y reportes.",
-  comoAyuda:
-    "🎯 *¿Cómo me ayuda?*\n" +
-    "• Ahorro de tiempo: menos planillas y coordinación\n" +
-    "• Menos errores: validaciones y reglas\n" +
-    "• Visibilidad: estado de cada envío al instante\n" +
-    "• Decisiones: reportes y métricas",
-  planes:
-    "💵 *Planes y precios*\n" +
-    "Trabajamos con planes según volumen y módulos (Emprendedor / Profesional / Enterprise).\n" +
-    "Te cotizamos según tu operación y podemos agendar una demo.",
-};
-
-/* ============ Google Sheets opcional (Leads) ============ */
+/* ============ Google Sheets opcional (leads) ============ */
 function hasGoogle() {
   try {
     fs.accessSync(CLIENT_PATH);
@@ -221,71 +191,26 @@ async function appendToSheet(values) {
     console.error("❌ Error Google Sheets:", err?.response?.data || err);
   }
 }
-async function recordLead({ wa_id, empresa, email, origen = "Zupply Bot" }) {
+async function recordLead({ wa_id, segment, empresa, email, origen = "Zupply Ventas" }) {
   const ts = new Date().toISOString();
-  await appendToSheet([ts, wa_id, empresa || "", email || "", origen]);
+  await appendToSheet([ts, wa_id, segment || "", empresa || "", email || "", origen]);
 }
 
-/* ============ UI (menús) ============ */
-function sendWelcome(to) {
-  return sendButtons(to, `${COPY.bienvenida}\n\n${COPY.pedirRol}`, [
-    { id: "rol_transportista", title: "🚚 Soy transportista" },
-    { id: "rol_cliente",       title: "🧑‍💼 Soy cliente" },
+/* ============ UI ============ */
+async function sendWelcome(to) {
+  await sendText(to, `${COPY.bienvenida}\n\n${COPY.preguntaVolumen}`);
+  return sendButtons(to, "Elegí una opción:", [
+    { id: "seg_0_100",   title: "📦 0–100/día" },
+    { id: "seg_100_300", title: "🚚 100–300/día" },
+    { id: "seg_300",     title: "🏢 300+ /día" },
   ]);
 }
-
-function sendTransportistaMenu(to) {
-  return sendList(to, {
-    header: "Zupply – Transportistas",
-    body: TRANSP.intro,
-    buttonText: "Ver opciones",
-    sections: [
-      {
-        title: "Información",
-        rows: [
-          { id: "t_integraciones",   title: "🔌 Integraciones" },
-          { id: "t_como",            title: "⚙️ ¿Cómo funciona?" },
-          { id: "t_requisitos",      title: "🧩 Requisitos técnicos" },
-          { id: "t_beneficios",      title: "✅ Beneficios" },
-        ],
-      },
-      {
-        title: "Acciones",
-        rows: [
-          { id: "t_asesor",          title: "💬 Hablar con un asesor" },
-          { id: "abrir_web",         title: "🌐 Abrir sitio" },
-          { id: "volver_inicio",     title: "⬅️ Volver al inicio" },
-        ],
-      },
-    ],
-  });
-}
-
-function sendClienteMenu(to) {
-  return sendList(to, {
-    header: "Zupply – Clientes",
-    body: CLIENTE.intro,
-    buttonText: "Ver opciones",
-    sections: [
-      {
-        title: "Información",
-        rows: [
-          { id: "c_conocer",         title: "🧭 Conocer el servicio" },
-          { id: "c_como_ayuda",      title: "🎯 ¿Cómo me ayuda?" },
-          { id: "c_planes",          title: "💵 Planes / Precios" },
-          { id: "c_seguimiento",     title: "📦 ¿Dónde está mi envío?" },
-        ],
-      },
-      {
-        title: "Acciones",
-        rows: [
-          { id: "c_asesor",          title: "💬 Hablar con un asesor" },
-          { id: "abrir_web",         title: "🌐 Abrir sitio" },
-          { id: "volver_inicio",     title: "⬅️ Volver al inicio" },
-        ],
-      },
-    ],
-  });
+function sendSegmentCTAs(to) {
+  return sendButtons(to, COPY.ctasPostPitch, [
+    { id: "cta_demo",   title: "🗓️ Quiero una demo" },
+    { id: "cta_asesor", title: "💬 Hablar con un asesor" },
+    { id: "cta_volver", title: "⬅️ Cambiar volumen" },
+  ]);
 }
 
 /* ============ Webhook Verify (GET) ============ */
@@ -297,7 +222,7 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-/* ============ Health simple ============ */
+/* ============ Health ============ */
 app.get("/health", (_, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
 /* ============ Webhook Events (POST) ============ */
@@ -312,44 +237,40 @@ app.post("/webhook", async (req, res) => {
     const type = msg.type;
     const session = getSession(from);
 
-    // === INTERACTIVE: botones o listas ===
+    // === INTERACTIVE ===
     if (type === "interactive") {
       const btn = msg?.interactive?.button_reply?.id;
       const list = msg?.interactive?.list_reply?.id;
       const id = btn || list;
 
-      if (!id) {
-        await sendWelcome(from);
+      if (!id) { await sendWelcome(from); return res.sendStatus(200); }
+
+      // Selección de segmento
+      if (["seg_0_100", "seg_100_300", "seg_300"].includes(id)) {
+        session.segment = id;
+        const p = pitchBySegment(id);
+        await sendText(from, `*${p.title}*\n${p.text}${p.plan}`);
+        await sendSegmentCTAs(from);
         return res.sendStatus(200);
       }
 
-      // Roles
-      if (id === "rol_transportista") { session.role = "transportista"; await sendTransportistaMenu(from); return res.sendStatus(200); }
-      if (id === "rol_cliente")       { session.role = "cliente";       await sendClienteMenu(from);      return res.sendStatus(200); }
-
-      // Transportista opciones
-      if (session.role === "transportista") {
-        if (id === "t_integraciones")  { await sendText(from, TRANSP.integraciones); await sendTransportistaMenu(from); return res.sendStatus(200); }
-        if (id === "t_como")           { await sendText(from, TRANSP.comoFunciona); await sendTransportistaMenu(from); return res.sendStatus(200); }
-        if (id === "t_requisitos")     { await sendText(from, TRANSP.requisitos);   await sendTransportistaMenu(from); return res.sendStatus(200); }
-        if (id === "t_beneficios")     { await sendText(from, TRANSP.beneficios);   await sendTransportistaMenu(from); return res.sendStatus(200); }
-        if (id === "t_asesor")         { await askLead(from, session);               return res.sendStatus(200); }
+      // CTAs
+      if (id === "cta_volver") {
+        sessions.delete(from);
+        await sendWelcome(from);
+        return res.sendStatus(200);
+      }
+      if (id === "cta_demo") {
+        await sendText(from, `🗓️ Agenda rápida: ${LINKS.demo}\n\nSi preferís, dejamos tus datos y te contactamos:`);
+        await askLead(from, session);
+        return res.sendStatus(200);
+      }
+      if (id === "cta_asesor") {
+        await askLead(from, session);
+        return res.sendStatus(200);
       }
 
-      // Cliente opciones
-      if (session.role === "cliente") {
-        if (id === "c_conocer")     { await sendText(from, CLIENTE.conocer);     await sendClienteMenu(from); return res.sendStatus(200); }
-        if (id === "c_como_ayuda")  { await sendText(from, CLIENTE.comoAyuda);   await sendClienteMenu(from); return res.sendStatus(200); }
-        if (id === "c_planes")      { await sendText(from, CLIENTE.planes);      await sendClienteMenu(from); return res.sendStatus(200); }
-        if (id === "c_seguimiento") { await sendText(from, COPY.seguimientoNoDisponible); await sendClienteMenu(from); return res.sendStatus(200); }
-        if (id === "c_asesor")      { await askLead(from, session);              return res.sendStatus(200); }
-      }
-
-      // Acciones comunes
-      if (id === "abrir_web")     { await sendText(from, `🌐 ${LINKS.web}`); await (session.role==="transportista"?sendTransportistaMenu(from):sendClienteMenu(from)); return res.sendStatus(200); }
-      if (id === "volver_inicio") { sessions.delete(from); await sendWelcome(from); return res.sendStatus(200); }
-
-      // Cualquier otro botón/lista
+      // Cualquier otro botón
       await sendWelcome(from);
       return res.sendStatus(200);
     }
@@ -369,7 +290,7 @@ app.post("/webhook", async (req, res) => {
       if (session.step === "lead_empresa") {
         session.data.empresa = (msg.text?.body || "").trim();
         session.step = "lead_email";
-        await sendText(from, "📧 Perfecto. Decime un *email* de contacto.");
+        await sendText(from, COPY.pedirEmail);
         return res.sendStatus(200);
       }
       if (session.step === "lead_email") {
@@ -377,40 +298,47 @@ app.post("/webhook", async (req, res) => {
         const ok = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
         if (!ok) { await sendText(from, COPY.emailInvalido); return res.sendStatus(200); }
         session.data.email = email;
-        try { await recordLead({ wa_id: from, empresa: session.data.empresa, email }); } catch {}
+        try { await recordLead({ wa_id: from, segment: session.segment, empresa: session.data.empresa, email }); } catch {}
         await sendText(from, COPY.graciasLead);
         sessions.delete(from);
-        await sendButtons(from, "¿Querés hacer algo más?", [
-          { id: "rol_transportista", title: "🚚 Transportista" },
-          { id: "rol_cliente",       title: "🧑‍💼 Cliente" },
-          { id: "abrir_web",         title: "🌐 Abrir sitio" },
+        await sendButtons(from, "¿Querés seguir?", [
+          { id: "seg_0_100",   title: "📦 0–100/día" },
+          { id: "seg_100_300", title: "🚚 100–300/día" },
+          { id: "seg_300",     title: "🏢 300+ /día" },
         ]);
         return res.sendStatus(200);
       }
 
       // Intenciones rápidas
-      if (body.includes("envío") || body.includes("envio") || body.includes("seguimiento")) {
-        await sendText(from, COPY.seguimientoNoDisponible);
-        if (session.role === "transportista") await sendTransportistaMenu(from);
-        else await sendClienteMenu(from);
+      if (body.includes("demo")) {
+        await sendText(from, `🗓️ Agenda: ${LINKS.demo}`);
+        await askLead(from, session);
         return res.sendStatus(200);
       }
       if (body.includes("asesor") || body.includes("contact")) {
         await askLead(from, session);
         return res.sendStatus(200);
       }
+      if (body.includes("precio") || body.includes("plan")) {
+        // Usa el segmento si ya lo eligió, sino preguntamos volumen
+        if (!session.segment) { await sendWelcome(from); return res.sendStatus(200); }
+        const p = pitchBySegment(session.segment);
+        await sendText(from, `${p.plan}\nPodemos cotizar según tu caso y volumen.`);
+        await sendSegmentCTAs(from);
+        return res.sendStatus(200);
+      }
 
-      // Fallback
+      // Fallback de ventas
       await sendText(from, COPY.fallback);
-      await sendButtons(from, "¿Cómo seguimos?", [
-        { id: "rol_transportista", title: "🚚 Transportista" },
-        { id: "rol_cliente",       title: "🧑‍💼 Cliente" },
-        { id: "c_asesor",          title: "💬 Hablar con asesor" },
+      await sendButtons(from, "Elegí una opción:", [
+        { id: "cta_asesor", title: "💬 Hablar con asesor" },
+        { id: "cta_demo",   title: "🗓️ Quiero una demo" },
+        { id: "cta_volver", title: "⬅️ Cambiar volumen" },
       ]);
       return res.sendStatus(200);
     }
 
-    // Otros tipos
+    // Otros tipos (audio/imágenes/etc.)
     await sendWelcome(from);
     return res.sendStatus(200);
   } catch (e) {
@@ -419,17 +347,18 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-/* ====== Helpers de flujo ====== */
+/* ====== Helpers ====== */
 async function askLead(to, session) {
   session.step = "lead_empresa";
   session.data = {};
-  await sendText(to, `${COPY.asesorCTA}\n\n📧 ${LINKS.mail}`);
+  await sendText(to, `${COPY.pedirEmpresa}\n\n📧 ${LINKS.mail}`);
 }
 
 /* ============ Start ============ */
 app.listen(PORT, () => {
-  console.log(`🚀 Zupply Bot escuchando en http://localhost:${PORT}`);
+  console.log(`🚀 Zupply Ventas Bot en http://localhost:${PORT}`);
   console.log("📞 PHONE_NUMBER_ID:", PHONE_NUMBER_ID || "(vacío)");
-  console.log("📄 Credenciales usadas (Google opcional):", { CLIENT_PATH, TOKEN_PATH });
+  console.log("📄 Google Sheets:", GOOGLE_SHEETS_ID ? "ON" : "OFF");
 });
+
 
