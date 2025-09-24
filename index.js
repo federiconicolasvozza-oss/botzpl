@@ -1,10 +1,6 @@
-// index.js – Zupply Bot (Logística, Vendedor y Otros servicios) – v3
-// - Botones ≤20 chars (máx 3 por mensaje)
-// - Listas para preguntas con 4 opciones
-// - Menú: "Soy Logística" / "Soy Vendedor" / "+ Servicios"
-// - Vendedor: Rubro → Volumen → Mejora → Lead
-// - Asesor con botón-URL vía TEMPLATE (sin pegar link); fallback discreto
-// - Guardado en Google Sheets (ID de tu archivo y pestaña "Hoja 1")
+// index.js – Zupply Bot (Logística, Vendedor y Otros servicios) – v4
+// Cambios: rangos choferes (2–10/11–20/+20), facturación (Viaje/Excel/Sistema),
+// Vendedor pregunta volumen (0–10/11–30/+30) sin rubro, botón asesor con template URL.
 
 import express from "express";
 import dotenv from "dotenv";
@@ -28,8 +24,10 @@ const API_VERSION = (process.env.API_VERSION || "v23.0").trim();
 const GOOGLE_SHEETS_ID = (process.env.GOOGLE_SHEETS_ID || "14B7OvEJ3TWloCHRhuCVbIVWHWkAaoSVyL0Cf6NCnXbM").trim();
 const TAB_LEADS = (process.env.TAB_LEADS || "Hoja 1").trim();
 
-// Template para botón-URL de asesor (crealo y aprobalo en Meta → “Message Templates”)
+// Template con botón-URL (crealo/aprobalo en Meta)
 const ADVISOR_TEMPLATE_NAME = (process.env.ADVISOR_TEMPLATE_NAME || "asesor_zupply").trim();
+// Si tu template es dinámico (https://wa.me/{{1}}) se usa este parámetro:
+const ADVISOR_WA_PARAM = (process.env.ADVISOR_WA_PARAM || "5491137829642").trim();
 
 /* ========= Credenciales Google ========= */
 function chooseCredPath(filename) {
@@ -46,14 +44,13 @@ const TOKEN_PATH  = chooseCredPath("oauth_token.json");
  * sessions[wa_id] = {
  *   rol: "logistica"|"vendedor"|"servicios"|null,
  *   step: string|null,
- *   // comunes
- *   segment: "seg_0_100"|"seg_100_300"|"seg_300"|null,
+ *   // volúmenes
+ *   segment: string|null, // ej logi: seg_0_100 / vta: vta_0_10
  *   // logística
  *   mejora_logi: "orden"|"choferes"|"rendiciones"|"facturacion"|null,
- *   choferes: "1_3"|"4_10"|"11_plus"|null,
- *   facturacion: "viaje"|"planilla"|"mixto"|null,
+ *   choferes: "2_10"|"11_20"|"20_plus"|null,
+ *   facturacion: "viaje"|"excel"|"sistema"|null,
  *   // vendedor
- *   rubro: "retail"|"industria"|"servicios"|null,
  *   mejora_vta: "costos"|"tiempos"|"devol"|"seguimiento"|null,
  *   // lead
  *   data: { empresa?: string, email?: string },
@@ -105,7 +102,7 @@ function sendButtons(to, text, buttons) {
     interactive: { type: "button", body: { text }, action: { buttons: norm } },
   });
 }
-// Lista interactiva (hasta 10 items). IDs de filas = reply.id
+// Lista interactiva (hasta 10 items)
 function sendList(to, headerText, bodyText, rows) {
   return sendMessage({
     messaging_product: "whatsapp",
@@ -116,13 +113,13 @@ function sendList(to, headerText, bodyText, rows) {
       header: { type: "text", text: headerText },
       body: { text: bodyText },
       action: {
-        button: "Elegir", // máx 20 chars
+        button: "Elegir",
         sections: [
           {
             title: "Opciones",
             rows: rows.map(r => ({
-              id: r.id,                             // ej: "logi_mej_orden"
-              title: (r.title || "").slice(0, 24), // recomendado ≤24
+              id: r.id,
+              title: (r.title || "").slice(0, 24),
               description: r.desc || ""
             }))
           }
@@ -131,13 +128,26 @@ function sendList(to, headerText, bodyText, rows) {
     }
   });
 }
-// Template con botón URL (no se ve el link en el mensaje)
+// Template con botón URL (soporta URL fija o dinámica {{1}})
 async function sendAdvisorTemplate(to) {
+  // Si tu template usa botón URL dinámico, descomentá components:
   return sendMessage({
     messaging_product: "whatsapp",
     to,
     type: "template",
-    template: { name: ADVISOR_TEMPLATE_NAME, language: { code: "es" } },
+    template: {
+      name: ADVISOR_TEMPLATE_NAME,
+      language: { code: "es" },
+      // Descomentar si el botón es dinámico (ej: https://wa.me/{{1}})
+      components: [
+        {
+          type: "button",
+          sub_type: "url",
+          index: "0",
+          parameters: [{ type: "text", text: ADVISOR_WA_PARAM }]
+        }
+      ]
+    },
   });
 }
 
@@ -187,20 +197,23 @@ function btnLogiMejora(to) {
   );
 }
 function btnLogiChoferes(to) {
+  // NUEVOS RANGOS: 2–10 / 11–20 / +20
   return sendButtons(to, "¿Cuántos choferes?", [
-    { id: "logi_ch_1_3",   title: "1–3" },
-    { id: "logi_ch_4_10",  title: "4–10" },
-    { id: "logi_ch_11p",   title: "11+" },
+    { id: "logi_ch_2_10",  title: "2–10" },
+    { id: "logi_ch_11_20", title: "11–20" },
+    { id: "logi_ch_20p",   title: "+20" },
   ]);
 }
 function btnLogiFacturacion(to) {
+  // NUEVAS OPCIONES: Por viaje / Excel / Sistema Gestión
   return sendButtons(to, "¿Cómo facturás?", [
-    { id: "logi_fac_viaje",   title: "Por viaje" },
-    { id: "logi_fac_plan",    title: "Planilla" },
-    { id: "logi_fac_mixto",   title: "Mixto" },
+    { id: "logi_fac_viaje",  title: "Por viaje" },
+    { id: "logi_fac_excel",  title: "Excel" },
+    { id: "logi_fac_sis",    title: "Sistema Gestión" },
   ]);
 }
-function btnVolumen(to) {
+// Volumen de logística (se mantiene)
+function btnVolumenLogi(to) {
   return sendButtons(to, "¿Volumen diario?", [
     { id: "seg_0_100",   title: "📦 0–100" },
     { id: "seg_100_300", title: "🚚 100–300" },
@@ -208,12 +221,12 @@ function btnVolumen(to) {
   ]);
 }
 
-/* Vendedor */
-function btnRubro(to) {
-  return sendButtons(to, "¿A qué rubro pertenecés?", [
-    { id: "rub_retail",    title: "🛒 Retail" },
-    { id: "rub_industria", title: "🏭 Industria" },
-    { id: "rub_servicios", title: "🧑‍💼 Servicios" },
+/* Vendedor: SIN rubro → volúmenes 0–10 / 11–30 / +30 */
+function btnVolumenVta(to) {
+  return sendButtons(to, "¿Paquetes por día?", [
+    { id: "vta_seg_0_10",  title: "0–10" },
+    { id: "vta_seg_11_30", title: "11–30" },
+    { id: "vta_seg_30p",   title: "+30" },
   ]);
 }
 function btnMejoraVta(to) {
@@ -274,12 +287,12 @@ async function recordLead(row) {
   const ts = new Date().toISOString();
   const {
     wa_id, rol, segment, mejora_logi, choferes, facturacion,
-    rubro, mejora_vta, empresa, email, origen_registro = "Zupply Ventas"
+    mejora_vta, empresa, email, origen_registro = "Zupply Ventas"
   } = row;
   await appendToSheet([
     ts, wa_id, rol || "", segment || "",
     mejora_logi || "", choferes || "", facturacion || "",
-    rubro || "", mejora_vta || "",
+    "" /* rubro eliminado */, mejora_vta || "",
     empresa || "", email || "", origen_registro
   ]);
 }
@@ -317,7 +330,7 @@ app.post("/webhook", async (req, res) => {
 
         // Menú principal
         if (id === "rol_logi") { session.rol = "logistica"; session.step = "logi_mejora"; await btnLogiMejora(from); continue; }
-        if (id === "rol_vta")  { session.rol = "vendedor";  session.step = "vta_rubro";   await btnRubro(from);      continue; }
+        if (id === "rol_vta")  { session.rol = "vendedor";  session.step = "vta_volumen"; await btnVolumenVta(from);  continue; }
         if (id === "rol_srv")  {
           session.rol = "servicios";
           await sendText(from, COPY.otros_servicios);
@@ -335,41 +348,33 @@ app.post("/webhook", async (req, res) => {
           await btnLogiChoferes(from);
           continue;
         }
-        // Logística → choferes
-        if (["logi_ch_1_3","logi_ch_4_10","logi_ch_11p"].includes(id)) {
-          session.choferes = id === "logi_ch_1_3" ? "1_3" : id === "logi_ch_4_10" ? "4_10" : "11_plus";
+        // Logística → choferes (nuevos rangos)
+        if (["logi_ch_2_10","logi_ch_11_20","logi_ch_20p"].includes(id)) {
+          session.choferes = id === "logi_ch_2_10" ? "2_10" : id === "logi_ch_11_20" ? "11_20" : "20_plus";
           session.step = "logi_facturacion";
           await btnLogiFacturacion(from);
           continue;
         }
-        // Logística → facturación
-        if (["logi_fac_viaje","logi_fac_plan","logi_fac_mixto"].includes(id)) {
-          session.facturacion = id === "logi_fac_viaje" ? "viaje" : id === "logi_fac_plan" ? "planilla" : "mixto";
+        // Logística → facturación (nuevas opciones)
+        if (["logi_fac_viaje","logi_fac_excel","logi_fac_sis"].includes(id)) {
+          session.facturacion = id === "logi_fac_viaje" ? "viaje" : id === "logi_fac_excel" ? "excel" : "sistema";
           session.step = "logi_volumen";
-          await btnVolumen(from);
+          await btnVolumenLogi(from);
           continue;
         }
-        // Volumen (común a ambos flujos)
+        // Logística → volumen
         if (["seg_0_100","seg_100_300","seg_300"].includes(id)) {
           session.segment = id;
-
-          // Si viene de vendedor y aún no preguntamos mejoras → ahora
-          if (session.rol === "vendedor" && !session.mejora_vta) {
-            session.step = "vta_mejora";
-            await btnMejoraVta(from);
-            continue;
-          }
-          // Si viene de logística (o vendedor ya contestó mejora) → pedimos datos
           session.step = "lead_empresa";
           await sendText(from, COPY.lead_empresa);
           continue;
         }
 
-        // Vendedor → rubro
-        if (["rub_retail","rub_industria","rub_servicios"].includes(id)) {
-          session.rubro = id.replace("rub_","");
-          session.step = "vta_volumen";
-          await btnVolumen(from);
+        // Vendedor → volumen (0–10 / 11–30 / +30)
+        if (["vta_seg_0_10","vta_seg_11_30","vta_seg_30p"].includes(id)) {
+          session.segment = id;
+          session.step = "vta_mejora";
+          await btnMejoraVta(from);
           continue;
         }
         // Vendedor → mejora (lista) luego del volumen
@@ -417,8 +422,8 @@ app.post("/webhook", async (req, res) => {
         }
         if (body.includes("soy vendedor")) {
           session.rol = "vendedor";
-          session.step = "vta_rubro";
-          await btnRubro(from);
+          session.step = "vta_volumen";
+          await btnVolumenVta(from);
           continue;
         }
         if (body.includes("servicio") || body.includes("+ servicios")) {
@@ -453,7 +458,6 @@ app.post("/webhook", async (req, res) => {
               mejora_logi: session.mejora_logi,
               choferes: session.choferes,
               facturacion: session.facturacion,
-              rubro: session.rubro,
               mejora_vta: session.mejora_vta,
               empresa: session.data.empresa,
               email,
@@ -495,5 +499,5 @@ app.listen(PORT, () => {
   console.log(`🚀 Zupply Bot en http://localhost:${PORT}`);
   console.log("📞 PHONE_NUMBER_ID:", PHONE_NUMBER_ID || "(vacío)");
   console.log("📄 Google Sheets:", GOOGLE_SHEETS_ID ? `ON (${GOOGLE_SHEETS_ID} / ${TAB_LEADS})` : "OFF");
-  console.log("🔗 Template asesor:", ADVISOR_TEMPLATE_NAME);
+  console.log("🔗 Template asesor:", ADVISOR_TEMPLATE_NAME, "| param:", ADVISOR_WA_PARAM);
 });
