@@ -1,10 +1,10 @@
-// index.js – Zupply Bot (Logística, Vendedor y Otros servicios)
+// index.js – Zupply Bot (Logística, Vendedor y Otros servicios) – v2 con listas
 import express from "express";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { google } from "googleapis";
-// import { fetch } from "undici"; // descomentar si usás Node < 18
+// import { fetch } from "undici"; // descomentá si usás Node < 18
 
 dotenv.config();
 const app = express();
@@ -21,10 +21,9 @@ const API_VERSION = (process.env.API_VERSION || "v23.0").trim();
 const GOOGLE_SHEETS_ID = (process.env.GOOGLE_SHEETS_ID || "14B7OvEJ3TWloCHRhuCVbIVWHWkAaoSVyL0Cf6NCnXbM").trim();
 const TAB_LEADS = (process.env.TAB_LEADS || "Hoja 1").trim();
 
-// Template para botón-URL de asesor (créalo en Meta y usá ese nombre)
+// Template para botón-URL de asesor (crealo y aprobalo en Meta)
 const ADVISOR_TEMPLATE_NAME = (process.env.ADVISOR_TEMPLATE_NAME || "asesor_zupply").trim();
-
-// Link del asesor (usado solo en fallback)
+// Fallback si el template aún no está disponible
 const ASESOR_WA = "https://wa.me/5491137829642";
 
 /* ========= Credenciales Google ========= */
@@ -37,10 +36,10 @@ function chooseCredPath(filename) {
 const CLIENT_PATH = chooseCredPath("oauth_client.json");
 const TOKEN_PATH  = chooseCredPath("oauth_token.json");
 
-/* ========= Sesiones ========= */
+/* ========= Sesiones (TTL) ========= */
 /**
  * sessions[wa_id] = {
- *   rol: "logistica" | "vendedor" | "servicios" | null,
+ *   rol: "logistica"|"vendedor"|"servicios"|null,
  *   step: string|null,
  *   // comunes
  *   segment: "seg_0_100"|"seg_100_300"|"seg_300"|null,
@@ -88,8 +87,8 @@ function sendText(to, body) {
   return sendMessage({ messaging_product: "whatsapp", to, type: "text", text: { body } });
 }
 function sendButtons(to, text, buttons) {
-  // WhatsApp: título máx 20 chars
-  const norm = buttons.map(b => {
+  // WhatsApp: 1–3 botones, título máx 20 chars
+  const norm = buttons.slice(0, 3).map(b => {
     let t = b.title || "";
     if (t.length > 20) t = t.slice(0, 20);
     return { type: "reply", reply: { id: b.id, title: t } };
@@ -101,19 +100,39 @@ function sendButtons(to, text, buttons) {
     interactive: { type: "button", body: { text }, action: { buttons: norm } },
   });
 }
-// Enviar template con botón URL (no muestra link en el texto)
+// Lista interactiva (hasta 10 items). IDs de filas = reply.id
+function sendList(to, headerText, bodyText, rows) {
+  return sendMessage({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      header: { type: "text", text: headerText },
+      body: { text: bodyText },
+      action: {
+        button: "Elegir", // máx 20 chars
+        sections: [
+          {
+            title: "Opciones",
+            rows: rows.map(r => ({
+              id: r.id,               // ej: "logi_mej_orden"
+              title: r.title.slice(0, 24), // WhatsApp recomienda <=24
+              description: r.desc || ""
+            }))
+          }
+        ]
+      }
+    }
+  });
+}
+// Template con botón URL (sin mostrar link en texto)
 async function sendAdvisorTemplate(to) {
-  // Creá en Meta un template (ej: asesor_zupply) con 1 botón URL apuntando a ASESOR_WA.
   return sendMessage({
     messaging_product: "whatsapp",
     to,
     type: "template",
-    template: {
-      name: ADVISOR_TEMPLATE_NAME,
-      language: { code: "es" },
-      // Si tu template usa URL fija, NO hace falta components.
-      // Si fuera URL con parámetro, agregar components con el parámetro.
-    },
+    template: { name: ADVISOR_TEMPLATE_NAME, language: { code: "es" } },
   });
 }
 
@@ -150,12 +169,17 @@ async function sendWelcome(to) {
 
 /* Logística */
 function btnLogiMejora(to) {
-  return sendButtons(to, "¿Qué querés mejorar?", [
-    { id: "logi_mej_orden",       title: "🟩 Orden flota" },
-    { id: "logi_mej_choferes",    title: "🟩 Control chofer" },
-    { id: "logi_mej_rendiciones", title: "🟩 Rendiciones" },
-    { id: "logi_mej_fact",        title: "🟩 Facturación" },
-  ]);
+  return sendList(
+    to,
+    "¿Qué querés mejorar?",
+    "Elegí una opción:",
+    [
+      { id: "logi_mej_orden",       title: "🟩 Orden flota" },
+      { id: "logi_mej_choferes",    title: "🟩 Control chofer" },
+      { id: "logi_mej_rendiciones", title: "🟩 Rendiciones" },
+      { id: "logi_mej_fact",        title: "🟩 Facturación" }
+    ]
+  );
 }
 function btnLogiChoferes(to) {
   return sendButtons(to, "¿Cuántos choferes?", [
@@ -188,12 +212,17 @@ function btnRubro(to) {
   ]);
 }
 function btnMejoraVta(to) {
-  return sendButtons(to, "¿Qué querés mejorar?", [
-    { id: "vta_costos",      title: "💵 Costos" },
-    { id: "vta_tiempos",     title: "⏱️ Tiempos" },
-    { id: "vta_devol",       title: "↩️ Devoluc." },
-    { id: "vta_seguimiento", title: "📍 Seguim." },
-  ]);
+  return sendList(
+    to,
+    "¿Qué querés mejorar?",
+    "Elegí una opción:",
+    [
+      { id: "vta_costos",      title: "💵 Costos" },
+      { id: "vta_tiempos",     title: "⏱️ Tiempos" },
+      { id: "vta_devol",       title: "↩️ Devoluciones" },
+      { id: "vta_seguimiento", title: "📍 Seguimiento" }
+    ]
+  );
 }
 
 /* CTAs finales */
@@ -294,7 +323,7 @@ app.post("/webhook", async (req, res) => {
           continue;
         }
 
-        // Logística → mejora
+        // Logística → mejora (lista)
         if (["logi_mej_orden","logi_mej_choferes","logi_mej_rendiciones","logi_mej_fact"].includes(id)) {
           session.mejora_logi = id.replace("logi_mej_","").replace("fact","facturacion");
           session.step = "logi_choferes";
@@ -315,7 +344,7 @@ app.post("/webhook", async (req, res) => {
           await btnVolumen(from);
           continue;
         }
-        // Volumen
+        // Volumen (común)
         if (["seg_0_100","seg_100_300","seg_300"].includes(id)) {
           session.segment = id;
           session.step = "lead_empresa";
@@ -330,7 +359,7 @@ app.post("/webhook", async (req, res) => {
           await btnMejoraVta(from);
           continue;
         }
-        // Vendedor → mejora
+        // Vendedor → mejora (lista)
         if (["vta_costos","vta_tiempos","vta_devol","vta_seguimiento"].includes(id)) {
           session.mejora_vta = id.replace("vta_","");
           session.step = "vta_volumen";
@@ -363,6 +392,29 @@ app.post("/webhook", async (req, res) => {
         if (["hola","menu","menú","inicio","start","ayuda"].includes(body)) {
           resetSession(from);
           await sendWelcome(from);
+          continue;
+        }
+
+        // Atajos por intención en texto libre
+        if (body.includes("logistica") || body.includes("logística")) {
+          session.rol = "logistica";
+          session.step = "logi_mejora";
+          await btnLogiMejora(from);
+          continue;
+        }
+        if (body.includes("vendedor") || body.includes("venta")) {
+          session.rol = "vendedor";
+          session.step = "vta_rubro";
+          await btnRubro(from);
+          continue;
+        }
+        if (body.includes("servicio")) {
+          session.rol = "servicios";
+          await sendText(from, COPY.otros_servicios);
+          await sendButtons(from, "¿Te interesa alguno?", [
+            { id: "srv_si", title: "✅ Sí" },
+            { id: "srv_no", title: "❌ No" },
+          ]);
           continue;
         }
 
@@ -401,7 +453,7 @@ app.post("/webhook", async (req, res) => {
           continue;
         }
 
-        // Atajos
+        // Atajos comunes
         if (body.includes("asesor")) {
           const ok = await sendAdvisorTemplate(from);
           if (!ok) await sendText(from, "Abrí este botón para hablar con un asesor:\n" + ASESOR_WA);
