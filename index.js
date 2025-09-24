@@ -448,3 +448,54 @@ app.post("/webhook", async (req, res) => {
         try {
           await recordLead({
             wa_id: from,
+            rol: session.rol,
+            segment: session.segment,
+            mejora_logi: session.mejora_logi,
+            choferes: session.choferes,
+            facturacion: session.facturacion,
+            mejora_vta: session.mejora_vta,
+            servicio: session.servicio,
+            empresa: session.data.empresa,
+            email,
+          });
+        } catch {}
+
+        await sendText(from, COPY.gracias);
+        const ok = await sendAdvisorTemplate(from);
+        if (!ok) await sendText(from, "👤 *Listo.* Un asesor te va a escribir por este chat.");
+        resetSession(from);
+        return res.sendStatus(200);
+      }
+
+      // Fallback
+      await sendWelcome(from);
+      return res.sendStatus(200);
+    }
+
+    // Otros tipos → menú
+    await sendWelcome(from);
+    return res.sendStatus(200);
+  } catch (e) {
+    console.error("💥 Webhook error:", e);
+    return res.sendStatus(200);
+  }
+});
+
+/* ========= CTAs (reutilizable) ========= */
+function btnCTAs(to) {
+  return sendButtons(to, "¿Cómo seguimos?", [
+    { id: "cta_demo",   title: "🗓️ Demo" },
+    { id: "cta_asesor", title: "👤 Asesor" },
+    { id: "cta_volver", title: "⬅️ Volver" },
+  ]);
+}
+
+/* ========= Start ========= */
+app.listen(PORT, () => {
+  console.log(`🚀 Zupply Bot en http://localhost:${PORT}`);
+  console.log("📞 PHONE_NUMBER_ID:", PHONE_NUMBER_ID || "(vacío)");
+  console.log("📄 Google Sheets:", GOOGLE_SHEETS_ID ? `ON (${GOOGLE_SHEETS_ID} / ${TAB_LEADS})` : "OFF");
+  console.log("🔗 Template asesor:", ADVISOR_TEMPLATE_NAME, "| param:", ADVISOR_WA_PARAM);
+});
+
+
