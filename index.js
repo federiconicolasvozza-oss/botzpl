@@ -1,4 +1,11 @@
-// index.js – Zupply Bot (Logística, Vendedor y Otros servicios) – v2 con listas
+// index.js – Zupply Bot (Logística, Vendedor y Otros servicios) – v3
+// - Botones ≤20 chars (máx 3 por mensaje)
+// - Listas para preguntas con 4 opciones
+// - Menú: "Soy Logística" / "Soy Vendedor" / "+ Servicios"
+// - Vendedor: Rubro → Volumen → Mejora → Lead
+// - Asesor con botón-URL vía TEMPLATE (sin pegar link); fallback discreto
+// - Guardado en Google Sheets (ID de tu archivo y pestaña "Hoja 1")
+
 import express from "express";
 import dotenv from "dotenv";
 import fs from "fs";
@@ -21,10 +28,8 @@ const API_VERSION = (process.env.API_VERSION || "v23.0").trim();
 const GOOGLE_SHEETS_ID = (process.env.GOOGLE_SHEETS_ID || "14B7OvEJ3TWloCHRhuCVbIVWHWkAaoSVyL0Cf6NCnXbM").trim();
 const TAB_LEADS = (process.env.TAB_LEADS || "Hoja 1").trim();
 
-// Template para botón-URL de asesor (crealo y aprobalo en Meta)
+// Template para botón-URL de asesor (crealo y aprobalo en Meta → “Message Templates”)
 const ADVISOR_TEMPLATE_NAME = (process.env.ADVISOR_TEMPLATE_NAME || "asesor_zupply").trim();
-// Fallback si el template aún no está disponible
-const ASESOR_WA = "https://wa.me/5491137829642";
 
 /* ========= Credenciales Google ========= */
 function chooseCredPath(filename) {
@@ -116,8 +121,8 @@ function sendList(to, headerText, bodyText, rows) {
           {
             title: "Opciones",
             rows: rows.map(r => ({
-              id: r.id,               // ej: "logi_mej_orden"
-              title: r.title.slice(0, 24), // WhatsApp recomienda <=24
+              id: r.id,                             // ej: "logi_mej_orden"
+              title: (r.title || "").slice(0, 24), // recomendado ≤24
               description: r.desc || ""
             }))
           }
@@ -126,7 +131,7 @@ function sendList(to, headerText, bodyText, rows) {
     }
   });
 }
-// Template con botón URL (sin mostrar link en texto)
+// Template con botón URL (no se ve el link en el mensaje)
 async function sendAdvisorTemplate(to) {
   return sendMessage({
     messaging_product: "whatsapp",
@@ -136,21 +141,21 @@ async function sendAdvisorTemplate(to) {
   });
 }
 
-/* ========= Copy ========= */
+/* ========= Copy (con *negrita* y _cursiva_) ========= */
 const COPY = {
   bienvenida:
     "👋 ¡Hola! Soy el asistente de *Zupply*.\n" +
-    "Te ayudamos a ordenar tu operación logística: datos claros, control de flota y visibilidad en tiempo real.\n\n" +
-    "Primero, contame qué buscás:",
+    "Te ayudamos a ordenar tu operación logística: *datos claros*, *control de flota* y *visibilidad* en tiempo real.\n\n" +
+    "_Primero, contame qué buscás:_",
   cta_principal: "Elegí una opción:",
   otros_servicios:
     "🧰 *Otros servicios Zupply*\n" +
-    "• 🤖 Bot de WhatsApp\n" +
-    "• ⚙️ Automatización de procesos\n" +
-    "• 📦 Gestión de Inventario\n" +
-    "• 📊 Analytics & Reportes\n" +
-    "• 🛍️ Tienda Web\n" +
-    "• 🏬 Digitalización de tienda física",
+    "• 🤖 *Bot de WhatsApp*\n" +
+    "• ⚙️ *Automatización de procesos*\n" +
+    "• 📦 *Gestión de Inventario*\n" +
+    "• 📊 *Analytics & Reportes*\n" +
+    "• 🛍️ *Tienda Web*\n" +
+    "• 🏬 *Digitalización de tienda física*",
   lead_empresa: "Perfecto. Decime el *nombre de tu empresa*.",
   lead_email: "📧 Ahora un *email* de contacto.",
   email_inval: "⚠️ Ese email no parece válido. Probá de nuevo.",
@@ -161,9 +166,9 @@ const COPY = {
 async function sendWelcome(to) {
   await sendText(to, COPY.bienvenida);
   return sendButtons(to, COPY.cta_principal, [
-    { id: "rol_logi", title: "🚚 Logística" },
-    { id: "rol_vta",  title: "🧑‍💼 Vendedor" },
-    { id: "rol_srv",  title: "🧰 Otros serv." },
+    { id: "rol_logi", title: "🚚 Soy Logística" },
+    { id: "rol_vta",  title: "🧑‍💼 Soy Vendedor" },
+    { id: "rol_srv",  title: "🧰 + Servicios" },
   ]);
 }
 
@@ -344,9 +349,17 @@ app.post("/webhook", async (req, res) => {
           await btnVolumen(from);
           continue;
         }
-        // Volumen (común)
+        // Volumen (común a ambos flujos)
         if (["seg_0_100","seg_100_300","seg_300"].includes(id)) {
           session.segment = id;
+
+          // Si viene de vendedor y aún no preguntamos mejoras → ahora
+          if (session.rol === "vendedor" && !session.mejora_vta) {
+            session.step = "vta_mejora";
+            await btnMejoraVta(from);
+            continue;
+          }
+          // Si viene de logística (o vendedor ya contestó mejora) → pedimos datos
           session.step = "lead_empresa";
           await sendText(from, COPY.lead_empresa);
           continue;
@@ -355,15 +368,15 @@ app.post("/webhook", async (req, res) => {
         // Vendedor → rubro
         if (["rub_retail","rub_industria","rub_servicios"].includes(id)) {
           session.rubro = id.replace("rub_","");
-          session.step = "vta_mejora";
-          await btnMejoraVta(from);
-          continue;
-        }
-        // Vendedor → mejora (lista)
-        if (["vta_costos","vta_tiempos","vta_devol","vta_seguimiento"].includes(id)) {
-          session.mejora_vta = id.replace("vta_","");
           session.step = "vta_volumen";
           await btnVolumen(from);
+          continue;
+        }
+        // Vendedor → mejora (lista) luego del volumen
+        if (["vta_costos","vta_tiempos","vta_devol","vta_seguimiento"].includes(id)) {
+          session.mejora_vta = id.replace("vta_","");
+          session.step = "lead_empresa";
+          await sendText(from, COPY.lead_empresa);
           continue;
         }
 
@@ -376,7 +389,7 @@ app.post("/webhook", async (req, res) => {
         if (id === "cta_demo")   { await sendText(from, "🗓️ Coordinemos una demo."); await btnCTAs(from); continue; }
         if (id === "cta_asesor") {
           const ok = await sendAdvisorTemplate(from);
-          if (!ok) await sendText(from, "Abrí este botón para hablar con un asesor:\n" + ASESOR_WA);
+          if (!ok) await sendText(from, "👤 *Listo.* Un asesor te va a escribir por este chat en minutos.");
           continue;
         }
 
@@ -396,19 +409,19 @@ app.post("/webhook", async (req, res) => {
         }
 
         // Atajos por intención en texto libre
-        if (body.includes("logistica") || body.includes("logística")) {
+        if (body.includes("soy logistica") || body.includes("soy logística") || body.includes("tengo una logistica")) {
           session.rol = "logistica";
           session.step = "logi_mejora";
           await btnLogiMejora(from);
           continue;
         }
-        if (body.includes("vendedor") || body.includes("venta")) {
+        if (body.includes("soy vendedor")) {
           session.rol = "vendedor";
           session.step = "vta_rubro";
           await btnRubro(from);
           continue;
         }
-        if (body.includes("servicio")) {
+        if (body.includes("servicio") || body.includes("+ servicios")) {
           session.rol = "servicios";
           await sendText(from, COPY.otros_servicios);
           await sendButtons(from, "¿Te interesa alguno?", [
@@ -456,7 +469,7 @@ app.post("/webhook", async (req, res) => {
         // Atajos comunes
         if (body.includes("asesor")) {
           const ok = await sendAdvisorTemplate(from);
-          if (!ok) await sendText(from, "Abrí este botón para hablar con un asesor:\n" + ASESOR_WA);
+          if (!ok) await sendText(from, "👤 *Listo.* Un asesor te contacta por acá.");
           continue;
         }
         if (body.includes("demo")) { await sendText(from, "🗓️ Coordinemos una demo."); await btnCTAs(from); continue; }
