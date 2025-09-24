@@ -1,35 +1,32 @@
-// index.js – Zupply Bot (v5.1 – vuelve al anterior + fixes pedidos)
-// - Menú: "Soy Logística" / "Soy Vendedor" / "+ Servicios"
-// - LOGÍSTICA: Mejora (lista) → Choferes (2–10 / 11–20 / +20) → Facturación (Por viaje / Excel / Sistema Gestión)
-//              → Volumen (0–100 / 100–300 / 300+) → Empresa (SIN email) → Gracias + botón Asesor (template)
-// - VENDEDOR:  Volumen (0–10 / 11–30 / +30) → Mejora (lista) → Empresa + Email → Gracias + botón Asesor
-// - SERVICIOS: Lista de servicios → Empresa + Email → Gracias + botón Asesor
-// - Botón Asesor via TEMPLATE URL (sin mostrar link) + fallback discreto
-// - List headers sin Markdown (evita #131009), botones ≤20 chars (máx 3)
+// index.js — Zupply Bot (v6) — listo para copiar/pegar
 
 import express from "express";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { google } from "googleapis";
-// Nota: en Node 18+ fetch es global. Si usás Node <18, instalá "undici" o "node-fetch".
 
 dotenv.config();
 const app = express();
 app.use(express.json({ limit: "20mb" }));
 
 /* ===================== ENV ===================== */
-const PORT = (process.env.PORT || 3000);
+const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = (process.env.VERIFY_TOKEN || "botconektar123").trim();
 const WHATSAPP_TOKEN = (process.env.WHATSAPP_TOKEN || "").trim();
 const PHONE_NUMBER_ID = (process.env.PHONE_NUMBER_ID || "").trim();
 const API_VERSION = (process.env.API_VERSION || "v23.0").trim();
 
-// Google Sheets
+// Google Sheets (SIEMPRE string)
 const GOOGLE_SHEETS_ID = (process.env.GOOGLE_SHEETS_ID || "14B7OvEJ3TWloCHRhuCVbIVWHWkAaoSVyL0Cf6NCnXbM").trim();
-const TAB_LEADS = (process.env.TAB_LEADS || "Hoja 1").trim();
+// Nombres de pestañas
+const TAB_NAMES = {
+  logistica: (process.env.TAB_LOGISTICA || "Logistica").trim(),
+  vendedor:  (process.env.TAB_VENDEDOR  || "Vendedor").trim(),
+  servicios: (process.env.TAB_SERVICIOS || "Servicios").trim(),
+};
 
-// Template botón-URL asesor (recomendado: URL dinámica https://wa.me/{{1}})
+// Template botón-URL de asesor (recomendado URL dinámica https://wa.me/{{1}})
 const ADVISOR_TEMPLATE_NAME = (process.env.ADVISOR_TEMPLATE_NAME || "asesor_zupply").trim();
 const ADVISOR_WA_PARAM = (process.env.ADVISOR_WA_PARAM || "5491137829642").trim();
 
@@ -45,21 +42,7 @@ const TOKEN_PATH  = chooseCredPath("oauth_token.json");
 
 /* ========= Sesiones ========= */
 /**
- * sessions[wa_id] = {
- *  rol: "logistica"|"vendedor"|"servicios"|null,
- *  step: string|null,
- *  segment: string|null,            // logi: seg_0_100 / seg_100_300 / seg_300
- *                                   // vta: vta_seg_0_10 / vta_seg_11_30 / vta_seg_30p
- *  // logística:
- *  mejora_logi: "orden"|"choferes"|"rendiciones"|"facturacion"|null,
- *  choferes: "2_10"|"11_20"|"20_plus"|null,
- *  facturacion: "viaje"|"excel"|"sistema"|null,
- *  // vendedor:
- *  mejora_vta: "costos"|"tiempos"|"devol"|"seguimiento"|null,
- *  // servicios:
- *  servicio: "bot"|"auto"|"stock"|"dash"|"web"|"fisica"|null,
- *  data: { empresa?: string, email?: string }
- * }
+ * sessions[wa_id] = { rol, step, segment, mejora_logi, choferes, facturacion, mejora_vta, servicio, data:{empresa,email} }
  */
 const sessions = new Map();
 function getSession(wa_id) {
@@ -82,11 +65,13 @@ async function sendMessage(payload) {
   }
   return res.ok;
 }
+
 function sendText(to, body) {
   return sendMessage({ messaging_product: "whatsapp", to, type: "text", text: { body } });
 }
+
 function sendButtons(to, text, buttons) {
-  // Máx 3 botones; título máx 20 chars
+  // Máx 3 botones; títulos ≤ 20 chars
   const norm = buttons.slice(0, 3).map(({ id, title }) => ({
     type: "reply",
     reply: { id, title: String(title).slice(0, 20) },
@@ -98,7 +83,8 @@ function sendButtons(to, text, buttons) {
     interactive: { type: "button", body: { text }, action: { buttons: norm } },
   });
 }
-// Lista interactiva (header SIN Markdown; body puede tener *negrita*)
+
+// Lista interactiva (header SIN markdown; body puede llevar negrita)
 function sendList(to, headerText, bodyText, rows) {
   const cleanHeader = String(headerText || "").replace(/[*_~`]/g, "");
   return sendMessage({
@@ -123,7 +109,8 @@ function sendList(to, headerText, bodyText, rows) {
     }
   });
 }
-// Template con botón-URL (no muestra link en texto)
+
+// Botón asesor vía TEMPLATE con URL
 async function sendAdvisorTemplate(to) {
   return sendMessage({
     messaging_product: "whatsapp",
@@ -190,7 +177,7 @@ function btnLogiFacturacion(to) {
   return sendButtons(to, "🧾 *¿Cómo facturás?*", [
     { id: "logi_fac_viaje", title: "Por viaje" },
     { id: "logi_fac_excel", title: "Excel" },
-    { id: "logi_fac_sis",   title: "Sistema Gestión" },
+    { id: "logi_fac_sis",   title: "Sistema Gest." },
   ]);
 }
 function btnVolumenLogi(to) {
@@ -252,20 +239,16 @@ function getOAuthClient() {
   oauth2.setCredentials(tokens);
   return oauth2;
 }
-async function appendToSheet(values) {
+async function appendToSheetCustom(sheetName, values) {
   if (!hasGoogle()) return;
-  try {
-    const auth = getOAuthClient();
-    const sheets = google.sheets({ version: "v4", auth });
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: GOOGLE_SHEETS_ID,
-      range: `${TAB_LEADS}!A1`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [values] },
-    });
-  } catch (err) {
-    console.error("❌ Error Google Sheets:", err?.response?.data || err);
-  }
+  const auth = getOAuthClient();
+  const sheets = google.sheets({ version: "v4", auth });
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: GOOGLE_SHEETS_ID, // <-- STRING SIEMPRE
+    range: `${sheetName}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [values] },
+  });
 }
 async function recordLead(row) {
   const ts = new Date().toISOString();
@@ -274,40 +257,25 @@ async function recordLead(row) {
     mejora_vta, servicio, empresa, email, origen_registro = "Zupply Ventas"
   } = row;
 
-  // Elegir pestaña según rol
-  let sheetName = "Hoja 1"; // fallback
-  if (rol === "logistica") sheetName = "Logistica";
-  if (rol === "vendedor")  sheetName = "Vendedor";
-  if (rol === "servicios") sheetName = "Servicios";
-
   const values = [
     ts, wa_id, rol || "", segment || "",
-    mejora_logi || "", choferes || "", facturacion || "",
-    mejora_vta || "", servicio || "",
-    empresa || "", email || "", origen_registro
+    (mejora_logi || ""), (choferes || ""), (facturacion || ""),
+    (mejora_vta || ""), (servicio || ""),
+    (empresa || ""), (email || ""), origen_registro
   ];
 
+  let tab = "Logistica";
+  if (rol === "vendedor")  tab = TAB_NAMES.vendedor;
+  else if (rol === "servicios") tab = TAB_NAMES.servicios;
+  else tab = TAB_NAMES.logistica;
+
   try {
-    await appendToSheetCustom(sheetName, values);
-  } catch (err) {
-    console.error("❌ Error guardando lead:", err);
-  }
-}
-async function appendToSheetCustom(sheetName, values) {
-  if (!hasGoogle()) return;
-  try {
-    const auth = getOAuthClient();
-    const sheets = google.sheets({ version: "v4", auth });
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: 14B7OvEJ3TWloCHRhuCVbIVWHWkAaoSVyL0Cf6NCnXbM,
-      range: `${sheetName}!A1`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [values] },
-    });
+    await appendToSheetCustom(tab, values);
   } catch (err) {
     console.error("❌ Error Google Sheets:", err?.response?.data || err);
   }
 }
+
 /* ========= Webhook Verify ========= */
 app.get("/webhook", (req, res) => {
   const mode = String(req.query["hub.mode"] || "");
@@ -333,53 +301,49 @@ app.post("/webhook", async (req, res) => {
     const type = msg.type;
     const session = getSession(from);
 
-    // ========= INTERACTIVE =========
+    // ----- INTERACTIVE -----
     if (type === "interactive") {
       const id = msg?.interactive?.button_reply?.id || msg?.interactive?.list_reply?.id || null;
       if (!id) { await sendWelcome(from); return res.sendStatus(200); }
 
-      // Menú principal
+      // Menú
       if (id === "rol_logi") { session.rol = "logistica"; session.step = "logi_mejora"; await btnLogiMejora(from); return res.sendStatus(200); }
       if (id === "rol_vta")  { session.rol = "vendedor";  session.step = "vta_volumen"; await btnVolumenVta(from);  return res.sendStatus(200); }
       if (id === "rol_srv")  { session.rol = "servicios"; session.step = "srv_list";     await servicesList(from);  return res.sendStatus(200); }
 
-      // LOGÍSTICA → mejora (lista)
+      // LOGÍSTICA
       if (["logi_mej_orden","logi_mej_choferes","logi_mej_rendiciones","logi_mej_fact"].includes(id)) {
         session.mejora_logi = id.replace("logi_mej_","").replace("fact","facturacion");
         session.step = "logi_choferes";
         await btnLogiChoferes(from);
         return res.sendStatus(200);
       }
-      // LOGÍSTICA → choferes
       if (["logi_ch_2_10","logi_ch_11_20","logi_ch_20p"].includes(id)) {
         session.choferes = id === "logi_ch_2_10" ? "2_10" : id === "logi_ch_11_20" ? "11_20" : "20_plus";
         session.step = "logi_facturacion";
         await btnLogiFacturacion(from);
         return res.sendStatus(200);
       }
-      // LOGÍSTICA → facturación
       if (["logi_fac_viaje","logi_fac_excel","logi_fac_sis"].includes(id)) {
         session.facturacion = id === "logi_fac_viaje" ? "viaje" : id === "logi_fac_excel" ? "excel" : "sistema";
         session.step = "logi_volumen";
         await btnVolumenLogi(from);
         return res.sendStatus(200);
       }
-      // LOGÍSTICA → volumen
       if (["seg_0_100","seg_100_300","seg_300"].includes(id)) {
         session.segment = id;
-        session.step = "lead_empresa"; // sin email
+        session.step = "lead_empresa"; // SIN email para logística
         await sendText(from, COPY.lead_empresa);
         return res.sendStatus(200);
       }
 
-      // VENDEDOR → volumen (IDs explícitos)
+      // VENDEDOR
       if (["vta_seg_0_10","vta_seg_11_30","vta_seg_30p"].includes(id)) {
         session.segment = id;
         session.step = "vta_mejora";
         await btnMejoraVta(from);
         return res.sendStatus(200);
       }
-      // VENDEDOR → mejora
       if (["vta_costos","vta_tiempos","vta_devol","vta_seguimiento"].includes(id)) {
         session.mejora_vta = id.replace("vta_","");
         session.step = "lead_empresa";
@@ -387,7 +351,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // SERVICIOS → selección
+      // SERVICIOS
       if (["srv_bot","srv_auto","srv_stock","srv_dash","srv_web","srv_fisica"].includes(id)) {
         session.servicio = id.replace("srv_","");
         session.step = "lead_empresa";
@@ -395,44 +359,16 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // CTAs
-      if (id === "cta_volver") { resetSession(from); await sendWelcome(from); return res.sendStatus(200); }
-      if (id === "cta_demo")   { await sendText(from, "🗓️ Coordinemos una demo."); await btnCTAs(from); return res.sendStatus(200); }
-      if (id === "cta_asesor") {
-        const ok = await sendAdvisorTemplate(from);
-        if (!ok) await sendText(from, "👤 *Listo.* Un asesor te va a escribir por este chat en minutos.");
-        return res.sendStatus(200);
-      }
-
-      await sendWelcome(from);
       return res.sendStatus(200);
     }
 
-    // ========= TEXTO =========
+    // ----- TEXT -----
     if (type === "text") {
       const raw = (msg.text?.body || "").trim();
       const body = raw.toLowerCase();
 
       if (["hola","menu","menú","inicio","start","ayuda"].includes(body)) {
-        resetSession(from);
-        await sendWelcome(from);
-        return res.sendStatus(200);
-      }
-
-      // Atajos
-      if (body.includes("soy logistica") || body.includes("soy logística")) {
-        session.rol = "logistica"; session.step = "logi_mejora"; await btnLogiMejora(from); return res.sendStatus(200);
-      }
-      if (body.includes("soy vendedor")) {
-        session.rol = "vendedor"; session.step = "vta_volumen"; await btnVolumenVta(from); return res.sendStatus(200);
-      }
-      if (body.includes("servicio")) {
-        session.rol = "servicios"; session.step = "srv_list"; await servicesList(from); return res.sendStatus(200);
-      }
-      if (body.includes("asesor")) {
-        const ok = await sendAdvisorTemplate(from);
-        if (!ok) await sendText(from, "👤 *Listo.* Un asesor te contacta por acá.");
-        return res.sendStatus(200);
+        resetSession(from); await sendWelcome(from); return res.sendStatus(200);
       }
 
       // Lead → empresa
@@ -440,17 +376,16 @@ app.post("/webhook", async (req, res) => {
         session.data.empresa = raw;
 
         if (session.rol === "logistica") {
-          try {
-            await recordLead({
-              wa_id: from,
-              rol: session.rol,
-              segment: session.segment,
-              mejora_logi: session.mejora_logi,
-              choferes: session.choferes,
-              facturacion: session.facturacion,
-              empresa: session.data.empresa,
-            });
-          } catch {}
+          // guarda sin email
+          await recordLead({
+            wa_id: from,
+            rol: session.rol,
+            segment: session.segment,
+            mejora_logi: session.mejora_logi,
+            choferes: session.choferes,
+            facturacion: session.facturacion,
+            empresa: session.data.empresa,
+          });
           await sendText(from, COPY.gracias);
           const ok = await sendAdvisorTemplate(from);
           if (!ok) await sendText(from, "👤 *Listo.* Un asesor te va a escribir por este chat.");
@@ -470,25 +405,30 @@ app.post("/webhook", async (req, res) => {
         if (!okMail) { await sendText(from, COPY.email_inval); return res.sendStatus(200); }
         session.data.email = email;
 
-        try {
-          await recordLead({
-            wa_id: from,
-            rol: session.rol,
-            segment: session.segment,
-            mejora_logi: session.mejora_logi,
-            choferes: session.choferes,
-            facturacion: session.facturacion,
-            mejora_vta: session.mejora_vta,
-            servicio: session.servicio,
-            empresa: session.data.empresa,
-            email,
-          });
-        } catch {}
+        await recordLead({
+          wa_id: from,
+          rol: session.rol,
+          segment: session.segment,
+          mejora_logi: session.mejora_logi,
+          choferes: session.choferes,
+          facturacion: session.facturacion,
+          mejora_vta: session.mejora_vta,
+          servicio: session.servicio,
+          empresa: session.data.empresa,
+          email,
+        });
 
         await sendText(from, COPY.gracias);
         const ok = await sendAdvisorTemplate(from);
         if (!ok) await sendText(from, "👤 *Listo.* Un asesor te va a escribir por este chat.");
         resetSession(from);
+        return res.sendStatus(200);
+      }
+
+      // Si escribe “asesor”
+      if (body.includes("asesor")) {
+        const ok = await sendAdvisorTemplate(from);
+        if (!ok) await sendText(from, "👤 *Listo.* Un asesor te contacta por acá.");
         return res.sendStatus(200);
       }
 
@@ -506,21 +446,11 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-/* ========= CTAs (reutilizable) ========= */
-function btnCTAs(to) {
-  return sendButtons(to, "¿Cómo seguimos?", [
-    { id: "cta_demo",   title: "🗓️ Demo" },
-    { id: "cta_asesor", title: "👤 Asesor" },
-    { id: "cta_volver", title: "⬅️ Volver" },
-  ]);
-}
-
 /* ========= Start ========= */
 app.listen(PORT, () => {
   console.log(`🚀 Zupply Bot en http://localhost:${PORT}`);
   console.log("📞 PHONE_NUMBER_ID:", PHONE_NUMBER_ID || "(vacío)");
-  console.log("📄 Google Sheets:", GOOGLE_SHEETS_ID ? `ON (${GOOGLE_SHEETS_ID} / ${TAB_LEADS})` : "OFF");
+  console.log("📄 Google Sheets:", GOOGLE_SHEETS_ID ? `ON (${GOOGLE_SHEETS_ID})` : "OFF");
+  console.log("🗂️ Tabs:", TAB_NAMES);
   console.log("🔗 Template asesor:", ADVISOR_TEMPLATE_NAME, "| param:", ADVISOR_WA_PARAM);
 });
-
-
