@@ -273,16 +273,41 @@ async function recordLead(row) {
     wa_id, rol, segment, mejora_logi, choferes, facturacion,
     mejora_vta, servicio, empresa, email, origen_registro = "Zupply Ventas"
   } = row;
-  await appendToSheet([
-    ts, wa_id,
-    rol || "", segment || "",
-    mejora_logi || "", choferes || "", facturacion || "",
-    "" /* rubro eliminado */, mejora_vta || "",
-    servicio || "",
-    empresa || "", email || "", origen_registro
-  ]);
-}
 
+  // Elegir pestaña según rol
+  let sheetName = "Hoja 1"; // fallback
+  if (rol === "logistica") sheetName = "Logistica";
+  if (rol === "vendedor")  sheetName = "Vendedor";
+  if (rol === "servicios") sheetName = "Servicios";
+
+  const values = [
+    ts, wa_id, rol || "", segment || "",
+    mejora_logi || "", choferes || "", facturacion || "",
+    mejora_vta || "", servicio || "",
+    empresa || "", email || "", origen_registro
+  ];
+
+  try {
+    await appendToSheetCustom(sheetName, values);
+  } catch (err) {
+    console.error("❌ Error guardando lead:", err);
+  }
+}
+async function appendToSheetCustom(sheetName, values) {
+  if (!hasGoogle()) return;
+  try {
+    const auth = getOAuthClient();
+    const sheets = google.sheets({ version: "v4", auth });
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: 14B7OvEJ3TWloCHRhuCVbIVWHWkAaoSVyL0Cf6NCnXbM,
+      range: `${sheetName}!A1`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [values] },
+    });
+  } catch (err) {
+    console.error("❌ Error Google Sheets:", err?.response?.data || err);
+  }
+}
 /* ========= Webhook Verify ========= */
 app.get("/webhook", (req, res) => {
   const mode = String(req.query["hub.mode"] || "");
